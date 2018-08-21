@@ -6,7 +6,7 @@ A utility to track [Synapse](https://www.synapse.org/) Project, Folder, and File
 
 ```
 usage: syt.py [-h] [-s] [-f] [-u USERNAME] [-p PASSWORD]
-              {checkout,checkin,show} entity-id [checkout-path]
+              {checkout,checkin,show} [entity-id] [checkout-path]
 
 positional arguments:
   {checkout,checkin,show}
@@ -17,7 +17,7 @@ positional arguments:
 
 optional arguments:
   -h, --help            show this help message and exit
-  -s, --skip-sync       Do not download or upload when checking in/out.
+  -s, --sync            Download or upload when checking in/out.
   -f, --force           Force a check in/out.
   -u USERNAME, --username USERNAME
                         Synapse username.
@@ -29,7 +29,7 @@ optional arguments:
 
 Checkout a folder (`syn001`) into `my_study_data`:
 ```bash
-$ syt.py checkout syn001 my_study_data
+$ syt.py checkout syn001 my_study_data --sync
 Checking out...
 Logging into Synapse...
 Loading Entity...
@@ -43,7 +43,7 @@ Checked out files:
   - ./my_study_data/test_file_B.txt
 Check-out was successful
 ```
-Note: After initial check-out you can re-check-out with `syt.py checkout my_study_data` or from inside `my_study_data` `syt.py checkout`. 
+Note: After initial check-out you can re-check-out with `syt.py checkout my_study_data` or from inside `my_study_data` `syt.py checkout`.
 
 Show the check-out status for `my_study_data`:
 ```bash
@@ -62,7 +62,7 @@ Note: Can also be done with `syt.py show syn001` or from inside `my_study_data` 
 
 Check-in `my_study_data`:
 ```bash
-$ syt.py checkin my_study_data
+$ syt.py checkin my_study_data --sync
 Checking in...
 Logging into Synapse...
 Loading Entity...

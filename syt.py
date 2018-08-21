@@ -78,7 +78,7 @@ class Syt:
         else:
             print('No checked out entities found.')
 
-    def checkout(self, checkout_path=os.getcwd(), skip_sync=False, force=False):
+    def checkout(self, checkout_path=os.getcwd(), sync=False, force=False):
         """
         Checks out an Entity.
         """
@@ -88,9 +88,11 @@ class Syt:
 
         if (self._is_checked_out(self._entity)):
             if (force):
-                print('WARNING: Entity already checked out.')
+                print('WARNING: Entity already checked out by {0}'.format(
+                    self._entity[self.ANNO_CHECKED_OUT_BY_NAME][0]))
             else:
-                print('Entity already checked out. Aborting.')
+                print('Entity already checked out by {0}. Aborting.'.format(
+                    self._entity[self.ANNO_CHECKED_OUT_BY_NAME][0]))
                 return
 
         checked_out_parent = self._any_parents_checked_out()
@@ -113,7 +115,7 @@ class Syt:
                     checked_out_child.name, checked_out_child.id))
                 return
 
-        if (not skip_sync):
+        if (sync):
             # Download all the folders and files.
             entities = synapseutils.syncFromSynapse(
                 self._synapse_client, self._entity, path=checkout_path)
@@ -133,7 +135,7 @@ class Syt:
 
         print('Check-out was successful')
 
-    def checkin(self, checkout_path=os.getcwd(), skip_sync=False, force=False):
+    def checkin(self, checkout_path=os.getcwd(), sync=False, force=False):
         """
         Checks in an Entity.
         """
@@ -148,16 +150,19 @@ class Syt:
                 print('Entity not checked out. Aborting.')
                 return
 
-        if (not force and self._entity[self.ANNO_CHECKED_OUT_BY_ID][0] != self._user.ownerId):
+        checked_out_by_id = self._entity[self.ANNO_CHECKED_OUT_BY_ID][0]
+
+        if (not force and checked_out_by_id != self._user.ownerId):
             if (force):
-                print('WARNING: Entity is currently checked out by another user.')
+                print('WARNING: Entity is currently checked out by {0}.'.format(
+                    self._entity[self.ANNO_CHECKED_OUT_BY_NAME][0]))
             else:
                 print(
-                    'Entity can only be checked in by the user that checked it out. Aborting.')
+                    'Entity can only be checked in by {0}. Aborting.'.format(self._entity[self.ANNO_CHECKED_OUT_BY_NAME][0]))
                 return
 
         # Upload the files
-        if (not skip_sync):
+        if (sync):
             manifest_filename = os.path.join(
                 checkout_path, 'SYNAPSE_METADATA_MANIFEST.tsv')
             if (os.path.exists(manifest_filename)):
@@ -311,7 +316,7 @@ def main(argv):
                         help='The ID of the Synapse Entity to execute the command on.')
     parser.add_argument('checkout_path', metavar='checkout-path',
                         nargs='?', default=os.getcwd(), help='The local path to sync with Synapse.')
-    parser.add_argument('-s', '--skip-sync', help='Do not download or upload when checking in/out.',
+    parser.add_argument('-s', '--sync', help='Download or upload when checking in/out.',
                         default=False, action='store_true')
     parser.add_argument('-f', '--force', help='Force a check in/out.',
                         default=False, action='store_true')
@@ -343,9 +348,9 @@ def main(argv):
     syt = Syt(entity_id, username=args.username, password=args.password)
 
     if args.command == 'checkin':
-        syt.checkin(checkout_path, args.skip_sync, args.force)
+        syt.checkin(checkout_path, args.sync, args.force)
     elif args.command == 'checkout':
-        syt.checkout(checkout_path, args.skip_sync, args.force)
+        syt.checkout(checkout_path, args.sync, args.force)
     else:
         syt.show()
 
