@@ -1,0 +1,6 @@
+numpy==1.14.5
+pandas==0.23.1
+sh==1.12.14
+synapseclient==1.8.1
+twine==1.11.0
+tox==3.2.1

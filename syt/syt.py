@@ -1,6 +1,4 @@
-#!/usr/bin/env python
-
-# Copyright 2017-present, Bill & Melinda Gates Foundation
+# Copyright 2018-present, Bill & Melinda Gates Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,22 +20,30 @@ import calendar
 import datetime
 import numpy
 import synapseclient
-from synapseclient import Project, Folder, File, Team, TeamMember
-from synapseclient import Team, TeamMember
-from synapseclient import Schema, Column, Table, Row, RowSet
+from synapseclient import Project, Folder, File, Column, EntityViewSchema
 import synapseutils
+
+try: 
+    import queue
+except ImportError:
+        import Queue as queue
 
 
 class Syt:
 
+    SYT_VIEW_NAME = 'syt'
+
     ANNO_CHECKED_OUT_BY_ID = '_syt_by_id'
     ANNO_CHECKED_OUT_BY_NAME = '_syt_by_name'
     ANNO_CHECKED_OUT_DATE = '_syt_date'
-    ANNO_CHECKED_OUT_ETAG = '_syt_etag'
-    ALL_ANNO = [ANNO_CHECKED_OUT_BY_ID, ANNO_CHECKED_OUT_BY_NAME,
-                ANNO_CHECKED_OUT_DATE, ANNO_CHECKED_OUT_ETAG]
+    ALL_ANNO = [ANNO_CHECKED_OUT_BY_ID,
+                ANNO_CHECKED_OUT_BY_NAME, ANNO_CHECKED_OUT_DATE]
 
-    def __init__(self, entity_id, username=None, password=None):
+    ADMIN_PERMS = ['UPDATE', 'DELETE', 'CHANGE_PERMISSIONS',
+                   'CHANGE_SETTINGS', 'CREATE', 'DOWNLOAD', 'READ', 'MODERATE']
+
+    def __init__(self, entity_id, verbose=False, username=None, password=None):
+        self.verbose = verbose
         self._synapse_client = None
         self._username = username
         self._password = password
@@ -45,32 +51,47 @@ class Syt:
         self._entity_id = entity_id
         self._entity = None
         self._project = None
+        self._syt_view = None
+
+        # Disable the synapseclient progress output.
+        if not verbose:
+            synapseclient.utils.printTransferProgress = lambda *a, **k: None
 
     def _load(self):
         self.synapse_login()
         self._user = self._synapse_client.getUserProfile()
         self._load_entity()
+        self._ensure_syt_view()
         return self._entity != None
 
     def show(self):
+        """
+        Show all entities that are checked out.
+        """
         print('Show Checked out entities...')
         if (not self._load()):
             return
 
-        entities = [self._entity]
-
-        entities += self._get_children(self._entity)
-
         checked_out = []
 
-        for entity in entities:
-            if (self._is_checked_out(entity)):
-                checked_out.append(entity)
+        print('Loading Check-outs...')
+        walker = None
 
-        if (len(checked_out)):
+        if isinstance(self._entity, Project):
+            walker = self._walk_all_checked_out()
+        else:
+            walker = self._walk_checked_out_children(self._entity)
+            if self._is_checked_out(self._entity):
+                checked_out.append(self._entity)
+
+        for entity in walker:
+            checked_out.append(entity)
+
+        if len(checked_out):
             for entity in checked_out:
                 print('-' * 80)
-                print('Entity: {0} ({1})'.format(entity.name, entity.id))
+                print('{0}: {1} ({2})'.format(
+                    entity.entityType.split('.')[-1].replace('Entity', ''), entity.name, entity.id))
                 print('Checked out by: {0} ({1})'.format(
                     entity[self.ANNO_CHECKED_OUT_BY_NAME][0], entity[self.ANNO_CHECKED_OUT_BY_ID][0]))
                 print('Checked out on: {0}'.format(
@@ -86,6 +107,10 @@ class Syt:
         if (not self._load()):
             return
 
+        if force and not self._is_admin_on_project():
+            print('Must have administrator privileges to force check-out.')
+            return
+
         if (self._is_checked_out(self._entity)):
             if (force):
                 print('WARNING: Entity already checked out by {0}'.format(
@@ -95,31 +120,44 @@ class Syt:
                     self._entity[self.ANNO_CHECKED_OUT_BY_NAME][0]))
                 return
 
-        checked_out_parent = self._any_parents_checked_out()
-        if (checked_out_parent != None):
-            if (force):
-                print('WARNING: Parent: {0} ({1}) is checked out.'.format(
-                    checked_out_parent.name, checked_out_parent.id))
-            else:
-                print('Parent: {0} ({1}) is checked out. Aborting.'.format(
-                    checked_out_parent.name, checked_out_parent.id))
-                return
+        if not isinstance(self._entity, Project):
+            print('Checking Parent Check-outs...')
+            for parent in self._walk_parents(self._entity, [Project, Folder]):
+                if (self._is_checked_out(parent)):
+                    parent_id = parent.id
+                    parent_name = parent.name
+                    parent_by_name = parent[self.ANNO_CHECKED_OUT_BY_NAME][0]
 
-        checked_out_child = self._any_children_checked_out()
-        if (checked_out_child != None):
+                    if (force):
+                        print('WARNING: Parent: {0} ({1}) is checked out by {2}.'.format(
+                            parent_name, parent_id, parent_by_name))
+                    else:
+                        print('Parent: {0} ({1}) is checked out by {2}. Aborting.'.format(
+                            parent_name, parent_id, parent_by_name))
+                        return
+
+        print('Checking Child Check-outs...')
+        checked_out_child = next(
+            self._walk_checked_out_children(self._entity), None)
+        if (checked_out_child):
+            child_id = checked_out_child.id
+            child_name = checked_out_child.name
+            child_by_name = checked_out_child[self.ANNO_CHECKED_OUT_BY_NAME][0]
+
             if (force):
-                print('WANRING: Child: {0} ({1}) is checked out.'.format(
-                    checked_out_child.name, checked_out_child.id))
+                print('WARNING: Child: {0} ({1}) is checked out by {2}.'.format(
+                    child_name, child_id, child_by_name))
             else:
-                print('Child: {0} ({1}) is checked out. Aborting.'.format(
-                    checked_out_child.name, checked_out_child.id))
+                print('Child: {0} ({1}) is checked out by {2}. Aborting.'.format(
+                    child_name, child_id, child_by_name))
                 return
 
         if (sync):
+            print('Syncing Folders and Files...')
             # Download all the folders and files.
             entities = synapseutils.syncFromSynapse(
                 self._synapse_client, self._entity, path=checkout_path)
-            print('')
+
             print('Checked out files:')
             for f in entities:
                 print('  - {0}'.format(f.path))
@@ -130,7 +168,6 @@ class Syt:
         self._entity[self.ANNO_CHECKED_OUT_BY_ID] = self._user.ownerId
         self._entity[self.ANNO_CHECKED_OUT_BY_NAME] = self._user.userName
         self._entity[self.ANNO_CHECKED_OUT_DATE] = datetime.datetime.now()
-        self._entity[self.ANNO_CHECKED_OUT_ETAG] = self._entity.etag
         self._synapse_client.store(self._entity)
 
         print('Check-out was successful')
@@ -141,6 +178,10 @@ class Syt:
         """
         print('Checking in...')
         if (not self._load()):
+            return
+
+        if force and not self._is_admin_on_project():
+            print('Must have administrator privileges to force check-in.')
             return
 
         if (not self._is_checked_out(self._entity)):
@@ -163,6 +204,7 @@ class Syt:
 
         # Upload the files
         if (sync):
+            print('Syncing Folders and Files...')
             manifest_filename = os.path.join(
                 checkout_path, 'SYNAPSE_METADATA_MANIFEST.tsv')
             if (os.path.exists(manifest_filename)):
@@ -183,61 +225,110 @@ class Syt:
     def _is_checked_out(self, entity):
         return self.ANNO_CHECKED_OUT_BY_ID in entity
 
-    def _any_parents_checked_out(self):
+    def _ensure_syt_view(self):
         """
-        Gets if any parent entities are checked out.
+        Ensure the syt table/view exists for the project.
         """
-        parents = self._get_parents(self._entity, [Project, Folder])
-        for folder in parents:
-            if (self._is_checked_out(folder)):
-                return folder
+        try:
+            # This will fail if the schema doesn't exist. This is a synapseclient bug.
+            self._syt_view = self._synapse_client.get(EntityViewSchema(
+                name=self.SYT_VIEW_NAME, parent=self._project), downloadFile=False)
+        except:
+            pass
 
-    def _any_children_checked_out(self):
+        if self._syt_view == None:
+            evs = EntityViewSchema(name=self.SYT_VIEW_NAME, parent=self._project,
+                                   scopes=[self._project], properties={'viewTypeMask': 9})
+
+            # Delete the 'type' property so we can set our own viewTypeMask to Files and Folders.
+            evs.pop('type')
+
+            # Since we removed 'type' we have to manually populate the base columns.
+            evs.addColumn(Column(name='id', columnType='ENTITYID'))
+            evs.addColumn(Column(name='parentId', columnType='ENTITYID'))
+            evs.addColumn(Column(name='projectId', columnType='ENTITYID'))
+            evs.addColumn(Column(name='type', columnType='STRING'))
+            evs.addColumn(
+                Column(name='name', columnType='STRING', maximumSize=256))
+
+            evs.addColumn(
+                Column(name=self.ANNO_CHECKED_OUT_BY_ID, columnType='STRING'))
+            evs.addColumn(
+                Column(name=self.ANNO_CHECKED_OUT_BY_NAME, columnType='STRING'))
+            evs.addColumn(
+                Column(name=self.ANNO_CHECKED_OUT_DATE, columnType='DATE'))
+
+            self._syt_view = self._synapse_client.store(evs)
+
+    def _walk_all_checked_out(self):
         """
-        Gets if any child entities are checked out.
+        Gets the Project and all files and folders that are checked out for the whole project.
         """
-        children = self._get_children(self._entity)
-        for folder in children:
-            if (self._is_checked_out(folder)):
-                return folder
+        tquery = self._synapse_client.tableQuery(
+            "select id, name, type, {0}, {1}, {2} from {3} where {0} <> '' ".format(
+                self.ANNO_CHECKED_OUT_BY_ID,
+                self.ANNO_CHECKED_OUT_BY_NAME,
+                self.ANNO_CHECKED_OUT_DATE,
+                self._syt_view.id
+            ),
+            resultsAs='rowset'
+        )
 
-    def _get_parents(self, child_entity, parent_types=[Project]):
+        # Add the project if it's checked out since Projects are not in the view.
+        if self._is_checked_out(self._project):
+            yield self._project
+
+        for row in tquery.rowset.rows:
+            yield self._synapse_client.get(row.values[0], downloadFile=False)
+
+    def _walk_parents(self, entity, parent_types=[Project]):
         """
-        Gets all the parent entities of a specific type.
+        Yields all the parent entities of a specific type.
         """
-        results = []
+        q = queue.Queue()
+        q.put(entity.parentId)
 
-        parent_id = child_entity.parentId
+        while not q.empty():
+            parent = self._synapse_client.get(q.get(), downloadFile=False)
 
-        if (parent_id == None or isinstance(child_entity, Project)):
-            return results
+            for parent_type in parent_types:
+                if (isinstance(parent, parent_type)):
+                    yield parent
 
-        parent = self._synapse_client.get(parent_id)
+            # Stop when we hit the Project.
+            # Parents exist beyond the project but users don't have access to them.
+            if not isinstance(parent, Project):
+                q.put(parent.parentId)
 
-        for parent_type in parent_types:
-            if (isinstance(parent, parent_type)):
-                results.append(parent)
-
-        results += self._get_parents(parent, parent_types)
-
-        return results
-
-    def _get_children(self, parent_entity):
+    def _walk_checked_out_children(self, parent):
         """
-        Get all the child Folders and Files.
+        Walks all the children entities and yields any that are checked out.
         """
-        results = []
+        q = queue.Queue()
+        q.put(parent.id)
 
-        children = self._synapse_client.getChildren(
-            parent_entity, includeTypes=['folder', 'file'])
+        while not q.empty():
+            parent_id = q.get()
 
-        for child in children:
-            child_entity = self._synapse_client.get(
-                child['id'], downloadFile=False)
-            results.append(child_entity)
-            results += self._get_children(child_entity)
+            tquery = self._synapse_client.tableQuery(
+                "select id, type, {0} from {1} where parentId = '{2}' ".format(
+                    self.ANNO_CHECKED_OUT_BY_ID,
+                    self._syt_view.id,
+                    parent_id
+                ),
+                resultsAs='rowset'
+            )
 
-        return results
+            for row in tquery.rowset.rows:
+                id = row.values[0]
+                type = row.values[1]
+                by_id = row.values[2]
+
+                if by_id:
+                    yield self._synapse_client.get(id, downloadFile=False)
+
+                if type == 'folder':
+                    q.put(id)
 
     def _load_entity(self):
         """
@@ -252,9 +343,12 @@ class Syt:
         if type in ['Project', 'Folder', 'File']:
             if (type != 'Project'):
                 print('Loading Project...')
-                self._project = self._get_parents(self._entity, [Project])[0]
+                self._project = self._walk_parents(
+                    self._entity, [Project]).next()
                 print('{0} "{1}" ({2}) from Project "{3}" ({4})'.format(
                     type, self._entity.name, self._entity.id, self._project.name, self._project.id))
+            else:
+                self._project = self._entity
         else:
             print('Found {0} {1} ({2})'.format(
                 type, self._entity.name, self._entity.id))
@@ -264,13 +358,42 @@ class Syt:
 
         return self._project != None
 
+    def _is_admin_on_project(self):
+        """
+        Gets if the user has admin privileges on the project.
+        """
+        user_perms = self._synapse_client.getPermissions(
+            self._project, self._user.ownerId)
+
+        admin_perms = set(self.ADMIN_PERMS)
+
+        if (set(user_perms) == admin_perms):
+            return True
+        else:
+            # Check the groups.
+            acl = self._synapse_client._getACL(self._project)
+
+            for resourceAccess in acl['resourceAccess']:
+                principalId = resourceAccess['principalId']
+                try:
+                    team = self._synapse_client.getTeam(principalId)
+                    team_members = self._synapse_client.getTeamMembers(team)
+                    for team_member in team_members:
+                        if team_member['member']['ownerId'] == self._user.ownerId:
+                            if set(resourceAccess['accessType']) == admin_perms:
+                                return True
+                except synapseclient.exceptions.SynapseHTTPError as ex:
+                    # This will 404 when fetching a User instead of a Team.
+                    if ex.response.status_code != 404:
+                        raise ex
+
     def synapse_login(self):
         """
         Logs into Synapse.
         """
         print('Logging into Synapse...')
-        syn_user = os.getenv('SYNAPSE_USER') or self._username
-        syn_pass = os.getenv('SYNAPSE_PASSWORD') or self._password
+        syn_user = self._username or os.getenv('SYNAPSE_USER')
+        syn_pass = self._password or os.getenv('SYNAPSE_PASSWORD')
 
         if syn_user == None:
             syn_user = input('Synapse username: ')
@@ -279,6 +402,7 @@ class Syt:
             syn_pass = getpass.getpass(prompt='Synapse password: ')
 
         self._synapse_client = synapseclient.Synapse()
+        self._synapse_client.table_query_timeout = 600
         self._synapse_client.login(syn_user, syn_pass, silent=True)
 
     @staticmethod
@@ -308,7 +432,7 @@ class Syt:
             return syt_file.read()
 
 
-def main(argv):
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('command', choices=[
                         'checkout', 'checkin', 'show'], help='The command to execute.')
@@ -319,6 +443,8 @@ def main(argv):
     parser.add_argument('-s', '--sync', help='Download or upload when checking in/out.',
                         default=False, action='store_true')
     parser.add_argument('-f', '--force', help='Force a check in/out.',
+                        default=False, action='store_true')
+    parser.add_argument('-v', '--verbose', help='Turn on verbose output.',
                         default=False, action='store_true')
     parser.add_argument('-u', '--username',
                         help='Synapse username.', default=None)
@@ -345,7 +471,8 @@ def main(argv):
                 'Entity ID not specified, .syt file not found in checkout-path: {0}'.format(checkout_path))
             return
 
-    syt = Syt(entity_id, username=args.username, password=args.password)
+    syt = Syt(entity_id, verbose=args.verbose,
+              username=args.username, password=args.password)
 
     if args.command == 'checkin':
         syt.checkin(checkout_path, args.sync, args.force)
@@ -356,4 +483,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main()

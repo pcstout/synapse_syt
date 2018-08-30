@@ -67,7 +67,7 @@ Checking in...
 Logging into Synapse...
 Loading Entity...
 Loading Project...
-Folder "Folder B" (syn001) from Project "Test  Project CheckInOut" (syn002)
+Folder "Folder B" (syn001) from Project "Test Project" (syn002)
 Validation and upload of: my_study_data/SYNAPSE_METADATA_MANIFEST.tsv
 Validating columns of manifest.....OK
 Validating that all paths exist..OK
@@ -81,3 +81,14 @@ Starting upload...
 Check-in was successful
 ```
 Note: Can also be done with `syt.py checkin syn001 my_study_data` or from inside `my_study_data` `syt.py checkin`.
+
+
+## Implementation
+
+Check-outs are tracked on each Project/Folder/File as [Annotations](https://docs.synapse.org/articles/annotation_and_query.html).
+When an entity is checked out the annotations are added and then removed when the entity is checked back in.
+![annotations](docs/images/annotations.png)
+
+Check-out validation is done via a table [View](https://docs.synapse.org/articles/views.html) in the Project.
+This View contains all Folders and Files in the Project along with the Syt annotations.
+![syn view](docs/images/syn_view.png)

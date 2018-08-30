@@ -1,2 +1,6 @@
 .vscode
+build
+*.pyc
+/dist/
+/*.egg-info
 tmp
